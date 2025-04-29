@@ -1,0 +1,455 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+    <title>分期收款融资计算器（含增值税）</title>
+    <style>
+        .container {
+            margin: 20px;
+            max-width: 1000px;
+        }
+
+        .input-group {
+            margin-bottom: 10px;
+        }
+
+        .input-group label {
+            display: inline-block;
+            width: 220px;
+        }
+
+        table {
+            border-collapse: collapse;
+            margin-top: 20px;
+        }
+
+        th,
+        td {
+            border: 1px solid #000;
+            padding: 8px;
+            text-align: right;
+        }
+
+        th {
+            background-color: #f2f2f2;
+        }
+
+        .summary {
+            margin: 15px 0;
+            color: #2c3e50;
+        }
+
+        .note {
+            color: #666;
+            font-size: 0.9em;
+        }
+
+        .voucher {
+            background: #f8f9fa;
+            padding: 15px;
+            margin-top: 20px;
+        }
+
+        .voucher-table {
+            width: 100%;
+            margin: 10px 0;
+        }
+
+        .voucher-table td {
+            padding: 5px;
+            border-bottom: 1px solid #ddd;
+        }
+
+        .flex-container {
+            display: flex;
+            gap: 20px;
+        }
+
+        .calc-section {
+            flex: 2;
+        }
+
+        .voucher-section {
+            flex: 1;
+        }
+    </style>
+</head>
+
+<body>
+    <div class="container">
+        <h2>智能分期收款融资计算器（含增值税）</h2>
+
+        <!-- 输入参数区 -->
+        <div class="input-group">
+            <label>合同总金额（万元，不含税）:</label>
+            <input type="number" id="totalAmount" value="2000" onchange="calculate()">
+        </div>
+        <div class="input-group">
+            <label>首期付款金额（万元）:</label>
+            <input type="number" id="downPayment" value="0" onchange="calculate()">
+        </div>
+        <div class="input-group">
+            <label>分期年数:</label>
+            <input type="number" id="years" value="5" min="1" onchange="calculate()">
+        </div>
+        <div class="input-group">
+            <label>付款频率:</label>
+            <select id="frequency" onchange="calculate()">
+                <option value="12">每月</option>
+                <option value="4">每季度</option>
+                <option value="2">每半年</option>
+                <option value="1">每年</option>
+            </select>
+        </div>
+        <div class="input-group">
+            <label>现销价格（万元，不含税）:</label>
+            <input type="number" id="cashPrice" value="1600" onchange="calculate()">
+        </div>
+        <div class="input-group">
+            <label>年有效折现率（%）:</label>
+            <input type="number" id="discountRate" value="7.93" step="0.01" readonly>
+            <div class="note" id="rateNote"></div>
+        </div>
+        <div class="input-group">
+            <label>采购成本（万元，不含税）:</label>
+            <input type="number" id="cost" value="1560" onchange="calculate()">
+        </div>
+        <div class="input-group">
+            <label>销项税率（%）:</label>
+            <input type="number" id="outputTaxRate" value="13" step="0.01" onchange="calculate()">
+        </div>
+        <div class="input-group">
+            <label>进项税率（%）:</label>
+            <input type="number" id="inputTaxRate" value="13" step="0.01" onchange="calculate()">
+        </div>
+        <button onclick="calculate()">开始计算</button>
+
+        <!-- 结果显示区 -->
+        <div class="flex-container">
+            <div class="calc-section">
+                <div id="result"></div>
+            </div>
+            <div class="voucher-section">
+                <div class="input-group">
+                    <label>查看会计期间:</label>
+                    <select id="periodSelect" onchange="showVoucher()">
+                        <option value="-1">请选择期间</option>
+                    </select>
+                </div>
+                <div id="voucherDisplay" class="voucher"></div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let scheduleData = [];
+        let params = {};
+
+        function updateRateNote() {
+            const freq = parseInt(document.getElementById('frequency').value);
+            const rate = parseFloat(document.getElementById('discountRate').value) || 0;
+            const periods = ['年', '半年', '季', '月'][[1, 2, 4, 12].indexOf(freq)];
+            const periodRate = (Math.pow(1 + rate / 100, 1 / freq) - 1);
+
+            document.getElementById('rateNote').innerHTML =
+                `等效${periods}利率：${(periodRate * 100).toFixed(4)}%`;
+        }
+
+        function npv(cashFlows, rate) {
+            let npvValue = 0;
+            for (let i = 0; i < cashFlows.length; i++) {
+                npvValue += cashFlows[i] / Math.pow(1 + rate, i);
+            }
+            return npvValue;
+        }
+
+        function irr(cashFlows, guess = 0.1) {
+            const tolerance = 0.000001;
+            let rate = guess;
+            let iterations = 0;
+            const maxIterations = 100;
+
+            while (iterations < maxIterations) {
+                const currentNpv = npv(cashFlows, rate);
+                const dRate = 0.00001;
+                const nextNpv = npv(cashFlows, rate + dRate);
+                const derivative = (nextNpv - currentNpv) / dRate;
+
+                const newRate = rate - currentNpv / derivative;
+                if (Math.abs(newRate - rate) < tolerance) {
+                    return newRate;
+                }
+                rate = newRate;
+                iterations++;
+            }
+            return NaN;
+        }
+
+        function calculate() {
+            // 获取输入参数
+            const totalReceivable = parseFloat(document.getElementById('totalAmount').value);
+            const downPayment = parseFloat(document.getElementById('downPayment').value) || 0;
+            const years = parseInt(document.getElementById('years').value);
+            const periodsPerYear = parseInt(document.getElementById('frequency').value);
+            const presentValue = parseFloat(document.getElementById('cashPrice').value);
+            const cost = parseFloat(document.getElementById('cost').value) || 0;
+            const outputTaxRate = parseFloat(document.getElementById('outputTaxRate').value) / 100;
+            const inputTaxRate = parseFloat(document.getElementById('inputTaxRate').value) / 100;
+
+            // 构建现金流数组
+            const totalPeriods = years * periodsPerYear;
+            const remainingReceivable = totalReceivable - downPayment;
+            const periodPayment = remainingReceivable / totalPeriods;
+            const cashFlows = [-presentValue + downPayment];
+            for (let i = 0; i < totalPeriods; i++) {
+                cashFlows.push(periodPayment);
+            }
+
+            // 计算年有效折现率
+            const periodRate = irr(cashFlows);
+            const annualRate = Math.pow(1 + periodRate, periodsPerYear) - 1;
+            document.getElementById('discountRate').value = (annualRate * 100).toFixed(2);
+
+            // 计算税额
+            const outputTaxTotal = totalReceivable * outputTaxRate;
+            const outputTaxCash = presentValue * outputTaxRate;
+            const inputTaxTotal = cost * inputTaxRate;
+
+            // 计算周期参数
+            const adjustedPeriodRate = Math.pow(1 + annualRate, 1 / periodsPerYear) - 1;
+            const periodPayment不含税 = remainingReceivable / totalPeriods;
+            const periodPayment含税 = periodPayment不含税 * (1 + outputTaxRate);
+
+            // 存储基础参数
+            params = {
+                totalReceivable,
+                downPayment,
+                presentValue,
+                cost,
+                outputTaxRate,
+                inputTaxRate,
+                periodPayment不含税,
+                periodPayment含税,
+                outputTaxTotal,
+                outputTaxCash,
+                inputTaxTotal,
+                periodsPerYear,
+                annualRate
+            };
+
+            // 调整长期应收款
+            const adjustedTotalReceivable = totalReceivable + outputTaxTotal - (downPayment * (1 + outputTaxRate));
+
+            // 计算摊销表
+            let carryingAmount = presentValue - downPayment;
+            scheduleData = [];
+            let tableHTML = `
+                <div class="summary">
+                    <strong>关键指标：</strong>
+                    实际年利率 ${(annualRate * 100).toFixed(2)}% |
+                    毛利润 ${(presentValue - cost).toFixed(2)}万元 |
+                    融资收益 ${(totalReceivable - presentValue).toFixed(2)}万元
+                </div>
+                <table>
+                    <tr>
+                        <th>期数</th>
+                        <th>期初摊余成本</th>
+                        <th>财务费用</th>
+                        <th>现金流入（含税）</th>
+                        <th>本金偿还</th>
+                        <th>期末摊余成本</th>
+                    </tr>
+                    <tr>
+                        <td>首期</td>
+                        <td>-</td>
+                        <td>-</td>
+                        <td>${(downPayment * (1 + outputTaxRate)).toFixed(2)}</td>
+                        <td>${downPayment.toFixed(2)}</td>
+                        <td>${(presentValue - downPayment).toFixed(2)}</td>
+                    </tr>
+            `;
+
+            for (let period = 1; period <= totalPeriods; period++) {
+                const interest = carryingAmount * adjustedPeriodRate;
+                let principal = periodPayment不含税 - interest;
+                let endBalance = carryingAmount - principal;
+
+                // 最后一期调整
+                if (period === totalPeriods) {
+                    principal = carryingAmount;
+                    endBalance = 0;
+                }
+
+                scheduleData.push({
+                    period,
+                    interest,
+                    principal,
+                    payment: periodPayment不含税,
+                    tax: periodPayment不含税 * outputTaxRate,
+                    startBalance: carryingAmount,
+                    endBalance
+                });
+
+                tableHTML += `
+                    <tr>
+                        <td>${period}</td>
+                        <td>${carryingAmount.toFixed(2)}</td>
+                        <td>${interest.toFixed(2)}</td>
+                        <td>${periodPayment含税.toFixed(2)}</td>
+                        <td>${principal.toFixed(2)}</td>
+                        <td>${endBalance.toFixed(2)}</td>
+                    </tr>
+                `;
+
+                carryingAmount = endBalance;
+            }
+
+            tableHTML += '</table>';
+            document.getElementById('result').innerHTML = tableHTML;
+
+            // 更新期间选择
+            const periodSelect = document.getElementById('periodSelect');
+            periodSelect.innerHTML = `
+                <option value="-1">请选择期间</option>
+                <option value="0">初始确认</option>
+                ${scheduleData.map((_, i) => `
+                    <option value="${i + 1}">第${i + 1}期</option>
+                `).join('')}
+            `;
+
+            updateRateNote();
+        }
+
+        function showVoucher() {
+            const periodIndex = document.getElementById('periodSelect').value;
+            const voucherDisplay = document.getElementById('voucherDisplay');
+            if (periodIndex == -1) {
+                voucherDisplay.innerHTML = '';
+                return;
+            }
+
+            let voucherHTML = '<h3>会计凭证</h3>';
+
+            if (periodIndex == 0) {
+                const downPayment = params.downPayment;
+                const outputTaxRate = params.outputTaxRate;
+                const totalReceivable = params.totalReceivable;
+                const presentValue = params.presentValue;
+                const outputTaxTotal = params.outputTaxTotal;
+                const outputTaxCash = params.outputTaxCash;
+                const cost = params.cost;
+                const inputTaxTotal = params.inputTaxTotal;
+
+                const adjustedTotalReceivable = totalReceivable + outputTaxTotal - (downPayment * (1 + outputTaxRate));
+
+                // 初始销售凭证
+                voucherHTML += `
+                    <div class="voucher-table">
+                        <div>初始确认凭证（销售）</div>
+                        <table>
+                            <tr>
+                                <td>银行存款</td>
+                                <td>${(downPayment * (1 + outputTaxRate)).toFixed(2)}</td>
+                                <td></td>
+                            </tr>
+                            <tr>
+                                <td>长期应收款</td>
+                                <td>${adjustedTotalReceivable.toFixed(2)}</td>
+                                <td></td>
+                            </tr>
+                            <tr>
+                                <td>主营业务收入</td>
+                                <td></td>
+                                <td>${presentValue.toFixed(2)}</td>
+                            </tr>
+                            <tr>
+                                <td>应交税费-销项税额</td>
+                                <td></td>
+                                <td>${outputTaxCash.toFixed(2)}</td>
+                            </tr>
+                            <tr>
+                                <td>未实现融资收益</td>
+                                <td></td>
+                                <td>${(totalReceivable - presentValue).toFixed(2)}</td>
+                            </tr>
+                            <tr>
+                                <td>应交税费-待转销项税额</td>
+                                <td></td>
+                                <td>${(outputTaxTotal - outputTaxCash).toFixed(2)}</td>
+                            </tr>
+                        </table>
+                    </div>
+                    <div class="voucher-table">
+                        <div>采购成本凭证</div>
+                        <table>
+                            <tr>
+                                <td>主营业务成本</td>
+                                <td>${cost.toFixed(2)}</td>
+                                <td></td>
+                            </tr>
+                            <tr>
+                                <td>应交税费-进项税额</td>
+                                <td>${inputTaxTotal.toFixed(2)}</td>
+                                <td></td>
+                            </tr>
+                            <tr>
+                                <td>库存商品</td>
+                                <td></td>
+                                <td>${cost.toFixed(2)}</td>
+                            </tr>
+                            <tr>
+                                <td>应付账款</td>
+                                <td></td>
+                                <td>${inputTaxTotal.toFixed(2)}</td>
+                            </tr>
+                        </table>
+                    </div>
+                `;
+            } else {
+                const data = scheduleData[periodIndex - 1];
+                voucherHTML += `
+                    <div class="voucher-table">
+                        <div>第${periodIndex}期凭证</div>
+                        <table>
+                            <tr>
+                                <td>未实现融资收益</td>
+                                <td>${data.interest.toFixed(2)}</td>
+                                <td></td>
+                            </tr>
+                            <tr>
+                                <td>财务费用</td>
+                                <td></td>
+                                <td>${data.interest.toFixed(2)}</td>
+                            </tr>
+                        </table>
+                    </div>
+                    <div class="voucher-table">
+                        <table>
+                            <tr>
+                                <td>银行存款</td>
+                                <td>${(data.payment + data.tax).toFixed(2)}</td>
+                                <td></td>
+                            </tr>
+                            <tr>
+                                <td>长期应收款</td>
+                                <td></td>
+                                <td>${data.payment.toFixed(2)}</td>
+                            </tr>
+                            <tr>
+                                <td>应交税费-销项税额</td>
+                                <td></td>
+                                <td>${data.tax.toFixed(2)}</td>
+                            </tr>
+                        </table>
+                    </div>
+                `;
+            }
+
+            voucherDisplay.innerHTML = voucherHTML;
+        }
+
+        calculate();
+    </script>
+</body>
+
+</html>    
